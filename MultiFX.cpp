@@ -11,24 +11,43 @@ Tremolo trem;
 Oscillator osc;
 Encoder encoder;
 DelayLine<float, 48000> delay;
-float delay_out, feedback, signal_out;
+CpuLoadMeter loadMeter;
+float delayRead, feedback, delayOutput, interSignal;
+int fxToggle;
 
 void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)
 {
+	loadMeter.OnBlockStart();
 	for (size_t i = 0; i < size; i++)
 	{
-		// Delay Configuration
-		delay_out = delay.Read();
-		signal_out = in[0][i] + delay_out;
-		feedback = (delay_out * 0.5) + (in[0][i]);
-		delay.Write(feedback);
+		interSignal = in[0][i];
+		
+		//
+		// Effects
+		//
 
-		out[0][i] = signal_out;
+		// Delay
+		if((fxToggle & 0b1) == 0b1) {
+			delayRead = delay.Read();
+
+			// Calculate and write feedback
+			feedback = (delayRead * 0.5) + (in[0][i]);
+			delay.Write(feedback);
+
+			// Output
+			interSignal = interSignal + delayRead;
+		}
 
 		// Chorus
-		out[0][i] = chorus.Process(out[0][i]);
+		if(((fxToggle >> 1) & 0b1) == 0b1) {
+			interSignal = 3 * chorus.Process(interSignal);
+		}
+
+		// Output
+		out[0][i] = interSignal;
 
 	}
+	loadMeter.OnBlockEnd();
 }
 
 int main(void)
@@ -51,19 +70,45 @@ int main(void)
 	delay.Init();
 	delay.SetDelay(sample_rate * delay_multiplier);
 
-	GPIO pin1;
-	GPIO pin2;
-	GPIO pin3;
-	pin1.Init(D0, GPIO::Mode::INPUT, GPIO::Pull::PULLUP);
-	pin2.Init(D1, GPIO::Mode::INPUT, GPIO::Pull::PULLUP);
-	pin3.Init(D2, GPIO::Mode::INPUT, GPIO::Pull::PULLUP);
+	loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+
+	/////////////////
+	//Encoder Stuff//
+	encoder.Init(D0, D2, D1);
+	int32_t encoderVal = 0;
+	/////////////////
 
 	hw.StartAudio(AudioCallback);
 
-	encoder.Init(D0, D2, D1);
-	int32_t value = 0;
 	while(1) {
-		value = value + encoder.Increment();
-		hw.PrintLine("%d", value);
+		
+			switch (encoderVal) {
+		case 1:
+			fxToggle = 0b0001; break;
+		case 2:
+			fxToggle = 0b0010; break;
+		case 3:
+			fxToggle = 0b0011; break;
+		default:
+			fxToggle = 0b0000; break;
+		}
+
+		const float avgLoad = loadMeter.GetAvgCpuLoad();
+		const float maxLoad = loadMeter.GetMaxCpuLoad();
+		const float minLoad = loadMeter.GetMinCpuLoad();
+
+		encoder.Debounce();
+		if(encoder.Increment() == 1 && encoderVal < 3) {
+			encoderVal = encoderVal + 1;
+		} else if(encoder.Increment() == -1 && encoderVal > 0){
+			encoderVal = encoderVal - 1;
+		}
+
+		hw.PrintLine("%u", fxToggle);
+
+		/* hw.PrintLine("Processing Load %:");
+        hw.PrintLine("Max: " FLT_FMT3, FLT_VAR3(maxLoad * 100.0f));
+        hw.PrintLine("Avg: " FLT_FMT3, FLT_VAR3(avgLoad * 100.0f));
+        hw.PrintLine("Min: " FLT_FMT3, FLT_VAR3(minLoad * 100.0f)); */
 	}
 }
